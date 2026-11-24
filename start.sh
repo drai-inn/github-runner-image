@@ -5,14 +5,22 @@
 # pod starts at once and with clean volumes.
 set -euo pipefail
 
-: "${GITHUB_ORG:?}" "${GITHUB_PAT:?}" "${RUNNER_GROUP:?}" "${RUNNER_LABELS:?}"
+: "${GITHUB_ORG:?}" "${RUNNER_GROUP:?}" "${RUNNER_LABELS:?}"
 
-token=$(curl -fsS -X POST \
-  -H "Authorization: Bearer ${GITHUB_PAT}" -H "Accept: application/vnd.github+json" \
-  "https://api.github.com/orgs/${GITHUB_ORG}/actions/runners/registration-token" | jq -r .token)
-# Jobs inherit this environment, and the PAT can register runners for the
-# whole organisation.
-unset GITHUB_PAT
+# GITHUB_PAT can register runners for the whole organisation. A process's
+# starting environment stays readable in /proc/<pid>/environ to its user, which
+# is also the jobs' user, so unsetting it is not enough: mint the registration
+# token, then replace this process with one started without the PAT.
+token_file=/tmp/registration-token
+if [[ -n "${GITHUB_PAT:-}" ]]; then
+  (umask 077; curl -fsS -X POST \
+    -H "Authorization: Bearer ${GITHUB_PAT}" -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/orgs/${GITHUB_ORG}/actions/runners/registration-token" \
+    | jq -r .token > "$token_file")
+  exec env -u GITHUB_PAT "$0"
+fi
+token=$(<"$token_file")
+rm "$token_file"
 
 cd /home/runner
 ./config.sh --unattended --ephemeral --disableupdate \
